@@ -16,7 +16,8 @@ from guided_diffusion.script_util import (
 from guided_diffusion.train_util import TrainLoop
 import torch
 import random
-
+import webdataset as wds
+    
 from encoders.modules import BERTEmbedder
 
 def set_requires_grad(model, value):
@@ -92,24 +93,31 @@ def load_latent_data(encoder, bert, data_dir, batch_size, image_size):
     data = load_data(
         data_dir=data_dir,
         batch_size=batch_size,
-        image_size=256,
-        class_cond=False,
+        image_size=256
     )
-    for batch, model_kwargs, text in data:
 
-        text = list(text)
-        for i in range(len(text)):
-            if random.randint(0,100) < 20:
-                text[i] = ''
+    dataloader = wds.WebLoader(data, batch_size=None, shuffle=False, num_workers=8) 
+    model_kwargs = {}
+    for text, batch in dataloader:
+        model_kwargs = {}
+        text_emb = bert.encode(list(text)).to(dist_util.dev())
+        text_blank = bert.encode(['']*batch.shape[0]).to(dist_util.dev())
+        for i in range(batch.shape[0]):
+            if random.randint(0, 100) < 20:
+                text_emb[i] = text_blank[i]
+        
+        model_kwargs["context"] = text_emb.half()
 
-        text_emb = bert.encode(text).to(dist_util.dev()).half()
-
-        model_kwargs["context"] = text_emb
-
+        # From https://github.com/afiaka87/latent-diffusion-deepspeed
+        # Unsure if the model in glid-3-xl has a clip_embed handler yet
+        # TODO: find it or add one
+        # clip_text = clip.tokenize(text, truncate=True).to(device)
+        # clip_emb = clip_model.encode_text(clip_text)
+        # model_kwargs["clip_embed"] = clip_emb
+         
         batch = batch.to(dist_util.dev())
         emb = encoder.encode(batch).sample().half()
         emb *= 0.18215
-
         yield emb, model_kwargs
 
 def create_argparser():
